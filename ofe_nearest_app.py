@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 import re
-from pathlib import Path
 from typing import Optional, Tuple
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -15,13 +15,14 @@ import folium
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 
-# ---------- CONFIG ----------
-DEFAULT_XLSX = Path("data/ofe_list_with_coords.xlsx")
+# ---------------------------------------------------------------
+# CONFIG
+# ---------------------------------------------------------------
 DEFAULT_SHEET = 0
 COUNTRY_BIAS = "Australia"
-USER_AGENT = "ofe-nearest/1.5 (research; contact: youremail@example.com)"
+USER_AGENT = "ofe-uploader/2.0 (research; contact: youremail@example.com)"
 FEATURE_KEYS = [str(i) for i in range(1, 16)]  # "1".."15"
-# ----------------------------
+# ---------------------------------------------------------------
 
 LABELS = {
     "council": "Council",
@@ -33,9 +34,10 @@ LABELS = {
     "searchok": "Does search function on website return correct results?",
 }
 
-# ================= Utilities =================
-def load_with_auto_header(src: Path, sheet) -> pd.DataFrame:
-    """Load Excel and detect the header row by finding the first row containing 'Address'."""
+# ==================== Helper Functions ====================
+
+def load_with_auto_header(src, sheet=0) -> pd.DataFrame:
+    """Load Excel and detect header row by finding the first row containing 'Address'."""
     raw = pd.read_excel(src, sheet_name=sheet, header=None, dtype=str)
     header_row = None
     for i in range(min(10, len(raw))):
@@ -77,7 +79,6 @@ def col_like(df, name):
     return None
 
 def build_name(row, cols_map):
-    # Prefer Park Name, then Name
     for key in ["park", "name"]:
         col = cols_map.get(key)
         if col and pd.notna(row.get(col)) and str(row.get(col)).strip():
@@ -120,22 +121,23 @@ def geocode_cached(addr: str) -> Optional[Tuple[float, float, str]]:
     loc = geocode(q)
     return (loc.latitude, loc.longitude, loc.address) if loc else None
 
-# ================= Main App =================
+
+# ==================== Streamlit App ====================
+
 st.set_page_config(page_title="OFE Nearest Finder", layout="wide")
-st.title("Outdoor Fitness Equipment Finder")
+st.title("🏋️ Outdoor Fitness Equipment Finder")
 
-# Persist across reruns
-if "user_loc" not in st.session_state:
-    st.session_state.user_loc = None
-if "geocoded_text" not in st.session_state:
-    st.session_state.geocoded_text = None
+st.markdown(
+    "Upload your **private Excel file** (not shared or stored) to find and visualise nearby outdoor fitness equipment."
+)
 
-# Load bundled data
-if not DEFAULT_XLSX.exists():
-    st.error(f"File not found: {DEFAULT_XLSX.resolve()}")
+uploaded_file = st.file_uploader("📁 Upload your OFE Excel file (.xlsx)", type=["xlsx"])
+if uploaded_file is None:
+    st.info("👆 Please upload your OFE dataset to continue.")
     st.stop()
 
-df = load_with_auto_header(DEFAULT_XLSX, DEFAULT_SHEET)
+# Load uploaded dataset
+df = load_with_auto_header(uploaded_file, DEFAULT_SHEET)
 cols_map = {
     "council":   col_like(df, "Council"),
     "name":      col_like(df, "Name"),
@@ -149,31 +151,37 @@ cols_map = {
 
 lat_col, lon_col = find_latlon_columns(df)
 if not lat_col or not lon_col:
-    st.error("Could not find Latitude/Longitude columns in the bundled file.")
+    st.error("Could not find Latitude/Longitude columns in the uploaded file.")
     st.stop()
 
 df = df[pd.to_numeric(df[lat_col], errors="coerce").notna() &
         pd.to_numeric(df[lon_col], errors="coerce").notna()].copy()
 if df.empty:
-    st.error("No rows with numeric Latitude/Longitude to map.")
+    st.error("No rows with numeric Latitude/Longitude found.")
     st.stop()
 
 df[lat_col] = df[lat_col].astype(float)
 df[lon_col] = df[lon_col].astype(float)
 
-# ---------- Sidebar controls ----------
+# Persist across reruns
+if "user_loc" not in st.session_state:
+    st.session_state.user_loc = None
+if "geocoded_text" not in st.session_state:
+    st.session_state.geocoded_text = None
+
+# Sidebar controls
 with st.sidebar:
-    st.markdown("### Your location")
+    st.header("Search Options")
     mode = st.radio("Set location by:", ["Address search", "Coordinates (lat/lon)", "Click on map"], index=0)
     nearest_k = st.slider("How many nearest sites?", 1, 50, 10)
 
-# ---------- Set location ----------
 center_dataset = (df[lat_col].median(), df[lon_col].median())
 
+# Location setting
 if mode == "Address search":
     with st.form("addr_form", clear_on_submit=False):
         user_text = st.text_input("Enter address (e.g., 'Norwood SA')", value=st.session_state.geocoded_text or "")
-        submitted = st.form_submit_button("Set location from address")
+        submitted = st.form_submit_button("Set location")
     if submitted and user_text.strip():
         r = geocode_cached(user_text.strip())
         if r:
@@ -184,14 +192,14 @@ if mode == "Address search":
             st.warning("Address not found.")
 elif mode == "Coordinates (lat/lon)":
     with st.form("coord_form", clear_on_submit=False):
-        lat_in = st.number_input("Latitude", value=st.session_state.user_loc[0] if st.session_state.user_loc else center_dataset[0], format="%.6f")
-        lon_in = st.number_input("Longitude", value=st.session_state.user_loc[1] if st.session_state.user_loc else center_dataset[1], format="%.6f")
-        submitted = st.form_submit_button("Set location from coordinates")
+        lat_in = st.number_input("Latitude", value=center_dataset[0], format="%.6f")
+        lon_in = st.number_input("Longitude", value=center_dataset[1], format="%.6f")
+        submitted = st.form_submit_button("Set location")
     if submitted:
         st.session_state.user_loc = (float(lat_in), float(lon_in))
         st.session_state.geocoded_text = f"{lat_in:.6f}, {lon_in:.6f}"
         st.success(f"Location set: {st.session_state.geocoded_text}")
-else:  # Click on map
+else:
     st.info("Click the mini map below; then click 'Use clicked point' to set the location.")
     mini = folium.Map(location=list(center_dataset), zoom_start=11, control_scale=True)
     folium.LatLngPopup().add_to(mini)
@@ -204,23 +212,19 @@ else:  # Click on map
             st.session_state.geocoded_text = f"{clicked[0]:.6f}, {clicked[1]:.6f}"
             st.success("Location set from click.")
 
-# Controls to clear / show current location
-cols_top = st.columns([1, 3, 6])
-with cols_top[0]:
-    if st.button("Clear location"):
-        st.session_state.user_loc = None
-        st.session_state.geocoded_text = None
-with cols_top[1]:
-    st.caption(f"Current location: {st.session_state.geocoded_text or '— not set —'}")
+# Clear button
+if st.button("Clear location"):
+    st.session_state.user_loc = None
+    st.session_state.geocoded_text = None
 
-# ---------- Compute nearest ----------
+# Compute nearest
 nearest_df = None
 if st.session_state.user_loc:
     df = df.copy()
     df["distance_km"] = df.apply(lambda r: geodesic(st.session_state.user_loc, (r[lat_col], r[lon_col])).km, axis=1)
     nearest_df = df.sort_values("distance_km").head(nearest_k)
 
-# ---------- Map ----------
+# Map
 if st.session_state.user_loc:
     center, zoom = st.session_state.user_loc, 13
 else:
@@ -229,12 +233,12 @@ else:
 m = folium.Map(location=list(center), zoom_start=zoom, control_scale=True)
 cluster = MarkerCluster(name="OFE / Off-road Sites").add_to(m)
 
-# User marker + radius
+# User marker
 if st.session_state.user_loc:
     folium.Marker(st.session_state.user_loc, tooltip="You are here", icon=folium.Icon(color="red")).add_to(m)
     folium.Circle(st.session_state.user_loc, radius=2000, color="#cc0000", fill=False).add_to(m)
 
-# Plot points (nearest or all)
+# Plot data
 to_plot = nearest_df if nearest_df is not None else df
 for _, row in to_plot.iterrows():
     title = build_name(row, cols_map)
@@ -247,14 +251,14 @@ for _, row in to_plot.iterrows():
         icon=folium.Icon(color=color, icon="ok-sign")
     ).add_to(cluster)
 
-# Auto-fit bounds to user + nearest pins
+# Fit bounds
 if st.session_state.user_loc and nearest_df is not None and not nearest_df.empty:
     bounds = [[st.session_state.user_loc[0], st.session_state.user_loc[1]]] + nearest_df[[lat_col, lon_col]].values.tolist()
     m.fit_bounds(bounds, padding=(30, 30))
 
 st_folium(m, height=580, width=None, key="main_map")
 
-# ---------- Nearest list (styled, clickable name, features) ----------
+# Nearest list
 if nearest_df is not None:
     st.markdown("### Nearest locations")
 
@@ -266,13 +270,11 @@ if nearest_df is not None:
     disp = nearest_df.copy()
     disp["Distance (km)"] = disp["distance_km"].map(lambda x: f"{x:.2f}")
 
-    # Features summary
     def summarise_features(row):
         feats = [str(row[c]).strip() for c in feat_cols if pd.notna(row.get(c)) and str(row.get(c)).strip()]
         return ", ".join(feats) if feats else ""
     disp["Features"] = disp.apply(summarise_features, axis=1)
 
-    # Clickable Park Name
     def clickable_name(row):
         name_val = str(row.get(park_col)) if park_col and pd.notna(row.get(park_col)) else "Outdoor Fitness Site"
         link_val = str(row.get(link_col)) if link_col and pd.notna(row.get(link_col)) else None
@@ -288,7 +290,6 @@ if nearest_df is not None:
 
     df_display = disp[cols_to_show].rename(columns=rename_map)
 
-    # Render clickable HTML table with clean styling
     html_table = df_display.to_html(escape=False, index=False, border=0)
     html_styled = f"""
     <style>
